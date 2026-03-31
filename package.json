@@ -1,0 +1,29 @@
+{
+    "name": "professional-image-downloader",
+    "version": "1.0.0",
+    "description": "Production-ready bulk image downloader with parallel processing, smart resume, and Excel reporting",
+    "main": "src/index.js",
+    "type": "module",
+    "scripts": {
+        "download": "node src/index.js",
+        "rename": "node src/rename.js",
+        "dev": "node --watch src/index.js"
+    },
+    "keywords": [
+        "image-downloader",
+        "bulk-download",
+        "excel",
+        "parallel",
+        "nodejs"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "chalk": "^5.3.0",
+        "cli-progress": "^3.12.0",
+        "dotenv": "^16.3.1",
+        "exceljs": "^4.4.0",
+        "p-limit": "^5.0.0",
+        "xlsx": "^0.18.5"
+    }
+}
