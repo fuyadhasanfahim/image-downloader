@@ -1,4 +1,4 @@
-import { createWriteStream } from 'fs';
+import { createWriteStream, promises as fs } from 'fs';
 import { pipeline } from 'stream/promises';
 import pLimit from 'p-limit';
 import config from '../config/index.js';
@@ -11,18 +11,16 @@ import {
 } from '../utils/fileUtils.js';
 
 /**
- * Download Manager Service
- * Handles parallel image downloads with retry logic
+ * Download Manager Service (Upgraded)
+ * Uses high-performance persistent connections and atomic writes
  */
 
 /**
- * Download a single image with retry logic
- * @param {string} url - Image URL
- * @param {string} savePath - Path to save the image
- * @param {number} attempt - Current attempt number
- * @returns {Promise<{success: boolean, error?: string}>}
+ * Download a single image with atomic write & validation
  */
 async function downloadImage(url, savePath, attempt = 1) {
+    const tempPath = `${savePath}.tmp`;
+    
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), config.timeout);
@@ -30,8 +28,8 @@ async function downloadImage(url, savePath, attempt = 1) {
         const response = await fetch(url, {
             signal: controller.signal,
             headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             },
         });
 
@@ -41,16 +39,33 @@ async function downloadImage(url, savePath, attempt = 1) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        // Create write stream and pipe response body
-        const fileStream = createWriteStream(savePath);
+        // Check content type
+        const contentType = response.headers.get('content-type');
+        if (contentType && !contentType.startsWith('image/')) {
+            logger.warn(`  [Warning] Content-type is ${contentType} for ${url}`);
+        }
+
+        // Atomic write to temp file
+        const fileStream = createWriteStream(tempPath);
         await pipeline(response.body, fileStream);
 
+        // Validate downloaded file
+        if (!isValidFile(tempPath, config.minFileSize)) {
+            await fs.unlink(tempPath).catch(() => {});
+            throw new Error('Invalid image file (corrupted or small size)');
+        }
+
+        // Success - rename temp to final
+        await fs.rename(tempPath, savePath);
         return { success: true };
+
     } catch (error) {
-        // Retry logic with exponential backoff
-        if (attempt < config.retryAttempts) {
+        // Cleanup temp file
+        await fs.unlink(tempPath).catch(() => {});
+
+        if (attempt < config.retryAttempts && !error.name === 'AbortError') {
             const delay = config.retryDelay * Math.pow(2, attempt - 1);
-            await sleep(delay);
+            await new Promise(r => setTimeout(r, delay));
             return downloadImage(url, savePath, attempt + 1);
         }
 
@@ -62,18 +77,7 @@ async function downloadImage(url, savePath, attempt = 1) {
 }
 
 /**
- * Sleep for specified milliseconds
- * @param {number} ms - Milliseconds to sleep
- */
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
  * Download all images for a single SKU
- * @param {Object} skuData - SKU data with URLs
- * @param {Function} onProgress - Progress callback
- * @returns {Promise<Object>} - Download result
  */
 async function downloadSkuImages(skuData, onProgress) {
     const { sku, urls, rowIndex } = skuData;
@@ -88,20 +92,15 @@ async function downloadSkuImages(skuData, onProgress) {
 
     for (const { url, columnIndex } of urls) {
         const filename = generateImageFilename(sku, columnIndex, url);
-        const savePath = getImageSavePath(
-            config.paths.downloads,
-            sku,
-            filename
-        );
+        const savePath = getImageSavePath(config.paths.downloads, sku, filename);
 
-        // Check if file already exists and is valid
+        // Advanced file validation
         if (isValidFile(savePath, config.minFileSize)) {
-            result.skipped.push({ filename, url, reason: 'Already exists' });
+            result.skipped.push({ filename, url, reason: 'Already exists & valid' });
             onProgress?.({ type: 'skip', sku, filename });
             continue;
         }
 
-        // Download the image
         const downloadResult = await downloadImage(url, savePath);
 
         if (downloadResult.success) {
@@ -109,12 +108,7 @@ async function downloadSkuImages(skuData, onProgress) {
             onProgress?.({ type: 'success', sku, filename });
         } else {
             result.failed.push({ filename, url, error: downloadResult.error });
-            onProgress?.({
-                type: 'error',
-                sku,
-                filename,
-                error: downloadResult.error,
-            });
+            onProgress?.({ type: 'error', sku, filename, error: downloadResult.error });
         }
     }
 
@@ -122,92 +116,55 @@ async function downloadSkuImages(skuData, onProgress) {
 }
 
 /**
- * Main download orchestrator
- * @param {Array} parsedData - Parsed Excel data
- * @param {number} startIndex - Index to start from (for resume)
- * @param {Object} callbacks - Callback functions
- * @returns {Promise<Array>} - All download results
+ * Main orchestrator
  */
 export async function downloadAll(parsedData, startIndex = 0, callbacks = {}) {
     const { onProgress, onSkuComplete, onInterrupt } = callbacks;
-
-    // Ensure download directory exists
     ensureDir(config.paths.downloads);
 
-    // Create concurrency limiter
     const limit = pLimit(config.concurrency);
-
-    // Track results
     const results = [];
     let isInterrupted = false;
     let currentIndex = startIndex;
 
-    // Handle interrupt signal
-    const interruptHandler = () => {
-        isInterrupted = true;
-        onInterrupt?.();
-    };
-
-    // Filter data to start from resume point
     const dataToProcess = parsedData.slice(startIndex);
+    logger.info(`🚀 Starting high-speed download for ${dataToProcess.length} SKUs...`);
 
-    logger.info(
-        `Processing ${dataToProcess.length} SKUs with ${config.concurrency} parallel workers`
-    );
-
-    // Create download tasks
     const tasks = dataToProcess.map((skuData, index) => {
         return limit(async () => {
-            if (isInterrupted) {
-                return null;
-            }
+            if (isInterrupted) return null;
 
             const result = await downloadSkuImages(skuData, onProgress);
             results.push(result);
             currentIndex = startIndex + index + 1;
 
             onSkuComplete?.(result, currentIndex);
-
             return result;
         });
     });
 
-    // Execute all tasks
     try {
         await Promise.all(tasks);
     } catch (error) {
-        logger.error(`Download error: ${error.message}`);
+        logger.error(`Critical error during batch: ${error.message}`);
     }
 
-    // Return interrupt handler for cleanup
     return {
         results,
         lastProcessedIndex: currentIndex,
-        wasInterrupted: isInterrupted,
-        interruptHandler,
+        wasInterrupted: isInterrupted
     };
 }
 
-/**
- * Calculate download statistics
- * @param {Array} results - Download results
- * @returns {Object} - Statistics
- */
 export function calculateStats(results) {
-    let success = 0;
-    let skipped = 0;
-    let failed = 0;
-
-    for (const result of results) {
-        success += result.downloaded.length;
-        skipped += result.skipped.length;
-        failed += result.failed.length;
+    let success = 0, skipped = 0, failed = 0;
+    for (const r of results) {
+        success += r.downloaded.length;
+        skipped += r.skipped.length;
+        failed += r.failed.length;
     }
-
     return {
-        success,
-        skipped,
-        failed,
+        success, skipped, failed,
         totalSkus: results.length,
         totalImages: success + skipped + failed,
     };
@@ -217,3 +174,4 @@ export default {
     downloadAll,
     calculateStats,
 };
+

@@ -1,183 +1,98 @@
 import chalk from 'chalk';
+import Table from 'cli-table3';
 
 /**
- * Professional color-coded logger utility
- * Provides consistent, beautiful console output
+ * Professional color-coded logger utility (Upgraded)
+ * Provides consistent, beautiful console output with table support
  */
 class Logger {
     constructor() {
         this.startTime = Date.now();
     }
 
-    /**
-     * Get formatted timestamp
-     */
     getTimestamp() {
         const now = new Date();
         return chalk.gray(`[${now.toLocaleTimeString()}]`);
     }
 
-    /**
-     * Get elapsed time since start
-     */
     getElapsedTime() {
         const elapsed = Date.now() - this.startTime;
         const seconds = Math.floor(elapsed / 1000);
         const minutes = Math.floor(seconds / 60);
         const remainingSeconds = seconds % 60;
-        return minutes > 0
-            ? `${minutes}m ${remainingSeconds}s`
-            : `${remainingSeconds}s`;
+        return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${remainingSeconds}s`;
     }
 
-    /**
-     * Log info message
-     */
-    info(message) {
-        console.log(`${this.getTimestamp()} ${chalk.blue('ℹ')} ${message}`);
+    info(message) { console.log(`${this.getTimestamp()} ${chalk.blue('ℹ')} ${message}`); }
+    success(message) { console.log(`${this.getTimestamp()} ${chalk.green('✅')} ${message}`); }
+    warn(message) { console.log(`${this.getTimestamp()} ${chalk.yellow('⚠️')} ${message}`); }
+    error(message) { console.log(`${this.getTimestamp()} ${chalk.red('❌')} ${message}`); }
+    skip(message) { console.log(`${this.getTimestamp()} ${chalk.cyan('⏭️')} ${message}`); }
+
+    printHeader(version = '2.0.0') {
+        console.log('\n' + chalk.bold.cyan('🚀 EXTRAORDINARY IMAGE DOWNLOADER') + chalk.gray(` v${version}`));
+        console.log(chalk.gray('━'.repeat(60)));
     }
 
-    /**
-     * Log success message
-     */
-    success(message) {
-        console.log(`${this.getTimestamp()} ${chalk.green('✅')} ${message}`);
-    }
-
-    /**
-     * Log warning message
-     */
-    warn(message) {
-        console.log(`${this.getTimestamp()} ${chalk.yellow('⚠️')} ${message}`);
-    }
-
-    /**
-     * Log error message
-     */
-    error(message) {
-        console.log(`${this.getTimestamp()} ${chalk.red('❌')} ${message}`);
-    }
-
-    /**
-     * Log skip message
-     */
-    skip(message) {
-        console.log(`${this.getTimestamp()} ${chalk.cyan('⏭️')} ${message}`);
-    }
-
-    /**
-     * Log download message
-     */
-    download(message) {
-        console.log(`${this.getTimestamp()} ${chalk.magenta('⬇️')} ${message}`);
-    }
-
-    /**
-     * Print application header
-     */
-    printHeader(version = '1.0.0') {
-        console.log('');
-        console.log(
-            chalk.bold.cyan('🚀 Professional Image Downloader') +
-                chalk.gray(` v${version}`)
-        );
-        console.log(chalk.gray('━'.repeat(50)));
-    }
-
-    /**
-     * Print configuration info
-     */
     printConfig(config) {
-        console.log(
-            chalk.white(`📂 Source: ${chalk.yellow(config.inputFile)}`)
+        const table = new Table({
+            chars: { 'top': '━' , 'top-mid': '┳' , 'top-left': '┏' , 'top-right': '┓'
+                   , 'bottom': '━' , 'bottom-mid': '┻' , 'bottom-left': '┗' , 'bottom-right': '┛'
+                   , 'left': '┃' , 'left-mid': '┣' , 'mid': '━' , 'mid-mid': '╋'
+                   , 'right': '┃' , 'right-mid': '┫' , 'middle': '┃' },
+            style: { head: [], border: ['gray'] }
+        });
+
+        table.push(
+            [chalk.cyan('Source'), chalk.yellow(config.inputFile || 'Multi-file Mode')],
+            [chalk.cyan('Concurrency'), chalk.yellow(`${config.concurrency} workers`)],
+            [chalk.cyan('Timeout'), chalk.yellow(`${config.timeout}ms`)],
+            [chalk.cyan('Output'), chalk.yellow(config.paths.downloads)]
         );
-        console.log(
-            chalk.white(`📁 Output: ${chalk.yellow(config.paths.downloads)}`)
-        );
-        console.log(
-            chalk.white(
-                `⚡ Concurrency: ${chalk.yellow(
-                    config.concurrency
-                )} parallel downloads`
-            )
-        );
-        console.log(chalk.gray('━'.repeat(50)));
+
+        console.log(table.toString());
         console.log('');
     }
 
-    /**
-     * Print summary statistics
-     */
     printSummary(stats) {
-        console.log('');
-        console.log(chalk.gray('━'.repeat(50)));
-        console.log(chalk.bold.white('📊 Download Summary'));
-        console.log(chalk.gray('━'.repeat(50)));
-        console.log(
-            `${chalk.green('✅ Success:')} ${chalk.bold.green(stats.success)}`
+        console.log('\n' + chalk.bold.white('📊 FINAL STATISTICS'));
+        
+        const table = new Table({
+            head: [chalk.gray('Metric'), chalk.gray('Value')],
+            colWidths: [20, 30],
+            style: { head: [], border: ['gray'] }
+        });
+
+        table.push(
+            [chalk.green('Success'), chalk.bold.green(stats.success)],
+            [chalk.cyan('Skipped'), stats.skipped],
+            [chalk.red('Failed'), chalk.bold.red(stats.failed)],
+            [chalk.blue('Total SKUs'), stats.totalSkus],
+            [chalk.magenta('Duration'), this.getElapsedTime()]
         );
-        console.log(
-            `${chalk.cyan('⏭️  Skipped:')} ${chalk.bold.cyan(stats.skipped)}`
-        );
-        console.log(
-            `${chalk.red('❌ Failed:')} ${chalk.bold.red(stats.failed)}`
-        );
-        console.log(
-            `${chalk.blue('📁 Total SKUs:')} ${chalk.bold.blue(
-                stats.totalSkus
-            )}`
-        );
-        console.log(
-            `${chalk.magenta('⏱️  Time:')} ${chalk.bold.magenta(
-                this.getElapsedTime()
-            )}`
-        );
+
+        console.log(table.toString());
 
         if (stats.reportPath) {
-            console.log(
-                `${chalk.yellow('📄 Report:')} ${chalk.underline(
-                    stats.reportPath
-                )}`
-            );
+            console.log(`\n${chalk.yellow('📄 REPORT SAVED TO:')} ${chalk.underline.blue(stats.reportPath)}`);
         }
-        console.log(chalk.gray('━'.repeat(50)));
         console.log('');
     }
 
-    /**
-     * Print graceful shutdown message
-     */
     printShutdown() {
-        console.log('');
-        console.log(chalk.yellow('━'.repeat(50)));
-        console.log(chalk.yellow.bold('⚠️  Graceful Shutdown Initiated'));
-        console.log(
-            chalk.yellow(
-                '   Saving progress and completing active downloads...'
-            )
-        );
-        console.log(chalk.yellow('━'.repeat(50)));
+        console.log('\n' + chalk.yellow.bold('⚠️  GRACEFUL SHUTDOWN INITIATED'));
+        console.log(chalk.gray('━'.repeat(60)));
     }
 
-    /**
-     * Print resume message
-     */
     printResume(lastRow) {
-        console.log(
-            chalk.cyan(`⏳ Resuming from row ${chalk.bold(lastRow)}...`)
-        );
-        console.log('');
+        console.log(chalk.cyan(`⏳ Resuming from row ${chalk.bold(lastRow)}...`));
     }
 
-    /**
-     * Print fresh start message
-     */
     printFreshStart() {
-        console.log(chalk.green('🆕 Starting fresh download...'));
-        console.log('');
+        console.log(chalk.green('🆕 Starting fresh download batch...'));
     }
 }
 
-// Export singleton instance
 export const logger = new Logger();
 export default logger;
+

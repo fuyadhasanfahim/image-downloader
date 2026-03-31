@@ -5,56 +5,46 @@ import { renameAndOrganize } from './services/renameManager.js';
 
 async function main() {
     try {
-        logger.printHeader('1.0.0 - Renamer');
+        logger.printHeader('2.0.0 - SMART ORGANIZER');
 
-        // Progress Bar
         const progressBar = new cliProgress.SingleBar({
-            format:
-                chalk.cyan('Renaming') +
-                ' |' +
-                chalk.cyan('{bar}') +
-                '| {percentage}% | {value}/{total} | {status}',
+            format: chalk.cyan('🚚 Moving & Renaming') + ' |' + chalk.cyan('{bar}') + '| {percentage}% | {value}/{total} | {status}',
             barCompleteChar: '█',
             barIncompleteChar: '░',
             hideCursor: true,
-            barsize: 25,
+            barsize: 30,
         });
 
-        // We don't know total yet, will update when start
         let isStarted = false;
+        logger.info('🚀 Starting the smart organization process...');
 
-        logger.info('Starting renaming process...');
+        const result = await renameAndOrganize(({ type, folder, total, totalFolders }) => {
+            if (!isStarted) {
+                progressBar.start(totalFolders, 0, { status: 'Initializing...' });
+                isStarted = true;
+            }
+            progressBar.update(total, {
+                status: `Processing ${folder.substring(0, 20)}...`
+            });
+        });
 
-        const result = await renameAndOrganize(
-            ({ type, folder, total, totalFolders }) => {
-                if (!isStarted) {
-                    progressBar.start(totalFolders, 0, {
-                        status: 'Starting...',
-                    });
-                    isStarted = true;
-                }
+        if (isStarted) progressBar.stop();
 
-                progressBar.update(total, {
-                    status: `Checked ${folder.substring(0, 15)}...`,
-                });
-            },
-        );
+        // Print a custom summary for the renamer since it doesn't need all download stats
+        logger.printSummary({
+            success: result.renamed,
+            skipped: 0,
+            failed: 0,
+            totalSkus: result.folders,
+        });
 
-        if (isStarted) {
-            progressBar.stop();
-        }
-
-        logger.success('--------------------------------------------------');
-        logger.success(`✅ Process Complete!`);
-        logger.info(`   Folders Processed: ${result.folders}`);
-        logger.info(`   Images Renamed:    ${result.renamed}`);
-        logger.info(`   Backup created in: 'done' folder`);
-        logger.success('--------------------------------------------------');
+        logger.success('✨ Folders organized and moved to "done" directory!');
+        
     } catch (error) {
-        logger.error(`Fatal error: ${error.message}`);
-        console.error(error);
+        logger.error(`Fatal organizer error: ${error.message}`);
         process.exit(1);
     }
 }
 
 main();
+

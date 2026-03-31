@@ -33,6 +33,7 @@ export const config = {
         data: join(ROOT_DIR, 'data'), // xlsx files location inside project
         downloads: join(ROOT_DIR, process.env.OUTPUT_DIR || 'downloads'),
         reports: join(ROOT_DIR, process.env.REPORTS_DIR || 'reports'),
+        done: join(ROOT_DIR, 'done'),
         logs: join(ROOT_DIR, 'logs'),
         progress: join(ROOT_DIR, '.progress.json'),
     },
