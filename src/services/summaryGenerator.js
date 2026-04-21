@@ -5,8 +5,8 @@ import logger from '../utils/logger.js';
 import { ensureDir } from '../utils/fileUtils.js';
 
 /**
- * Summary Generator Service
- * Creates professional Excel summary reports
+ * Summary Generator Service (v3.0 — Category-Aware)
+ * Creates professional Excel summary reports with category breakdown
  */
 
 /**
@@ -23,18 +23,21 @@ export async function generateSummary(results, stats) {
     const filePath = join(config.paths.reports, filename);
 
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = 'Professional Image Downloader';
+    workbook.creator = 'Professional Image Downloader v3.0';
     workbook.created = new Date();
 
     // Create Overview sheet
     await createOverviewSheet(workbook, stats);
+
+    // Create Category Breakdown sheet
+    await createCategorySheet(workbook, results);
 
     // Create Details sheet
     await createDetailsSheet(workbook, results);
 
     // Create Failed Downloads sheet (if any)
     const failedItems = results.flatMap((r) =>
-        r.failed.map((f) => ({ sku: r.sku, rowIndex: r.rowIndex, ...f }))
+        r.failed.map((f) => ({ sku: r.sku, category: r.category, rowIndex: r.rowIndex, ...f }))
     );
 
     if (failedItems.length > 0) {
@@ -96,6 +99,7 @@ async function createOverviewSheet(workbook, stats) {
         ['', '', '', ''],
         ['📁 Total SKUs Processed', stats.totalSkus, '', ''],
         ['🖼️ Total Images', stats.totalImages, '', ''],
+        ['📂 Total Categories', stats.totalCategories || 0, '', ''],
     ];
 
     statsData.forEach((row, index) => {
@@ -134,6 +138,64 @@ async function createOverviewSheet(workbook, stats) {
 }
 
 /**
+ * Create Category Breakdown sheet
+ */
+async function createCategorySheet(workbook, results) {
+    const sheet = workbook.addWorksheet('Categories', {
+        properties: { tabColor: { argb: 'FF9800' } },
+    });
+
+    // Headers
+    const headers = ['Category', 'SKUs', 'Downloaded', 'Skipped', 'Failed', 'Total Images'];
+    const headerRow = sheet.addRow(headers);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFF' } };
+    headerRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF9800' },
+    };
+
+    // Aggregate by category
+    const catMap = new Map();
+    for (const r of results) {
+        const cat = r.category || 'Uncategorized';
+        if (!catMap.has(cat)) {
+            catMap.set(cat, { skus: 0, downloaded: 0, skipped: 0, failed: 0 });
+        }
+        const c = catMap.get(cat);
+        c.skus++;
+        c.downloaded += r.downloaded.length;
+        c.skipped += r.skipped.length;
+        c.failed += r.failed.length;
+    }
+
+    // Sort by SKU count descending
+    const sorted = [...catMap.entries()].sort((a, b) => b[1].skus - a[1].skus);
+    for (const [cat, data] of sorted) {
+        const total = data.downloaded + data.skipped + data.failed;
+        const row = sheet.addRow([cat, data.skus, data.downloaded, data.skipped, data.failed, total]);
+
+        if (data.failed > 0) {
+            row.getCell(5).font = { color: { argb: 'F44336' }, bold: true };
+        }
+        if (data.downloaded > 0) {
+            row.getCell(3).font = { color: { argb: '4CAF50' } };
+        }
+    }
+
+    sheet.columns = [
+        { width: 35 },
+        { width: 10 },
+        { width: 12 },
+        { width: 10 },
+        { width: 10 },
+        { width: 14 },
+    ];
+
+    sheet.autoFilter = { from: 'A1', to: 'F1' };
+}
+
+/**
  * Create Details sheet with per-SKU information
  */
 async function createDetailsSheet(workbook, results) {
@@ -143,6 +205,7 @@ async function createDetailsSheet(workbook, results) {
 
     // Headers
     const headers = [
+        'Category',
         'SKU',
         'Row',
         'Downloaded',
@@ -171,6 +234,7 @@ async function createDetailsSheet(workbook, results) {
                 : '❌ Empty';
 
         const row = sheet.addRow([
+            result.category || '',
             result.sku,
             result.rowIndex,
             result.downloaded.length,
@@ -182,15 +246,16 @@ async function createDetailsSheet(workbook, results) {
 
         // Color code based on status
         if (result.failed.length > 0) {
-            row.getCell(5).font = { color: { argb: 'F44336' } };
+            row.getCell(6).font = { color: { argb: 'F44336' } };
         }
         if (result.downloaded.length > 0) {
-            row.getCell(3).font = { color: { argb: '4CAF50' } };
+            row.getCell(4).font = { color: { argb: '4CAF50' } };
         }
     });
 
     // Auto-fit columns
     sheet.columns = [
+        { width: 25 },
         { width: 35 },
         { width: 8 },
         { width: 12 },
@@ -203,7 +268,7 @@ async function createDetailsSheet(workbook, results) {
     // Add filters
     sheet.autoFilter = {
         from: 'A1',
-        to: 'G1',
+        to: 'H1',
     };
 }
 
@@ -216,7 +281,7 @@ async function createFailedSheet(workbook, failedItems) {
     });
 
     // Headers
-    const headers = ['SKU', 'Row', 'Filename', 'URL', 'Error Message'];
+    const headers = ['Category', 'SKU', 'Row', 'Filename', 'URL', 'Error Message'];
     const headerRow = sheet.addRow(headers);
     headerRow.font = { bold: true, color: { argb: 'FFFFFF' } };
     headerRow.fill = {
@@ -228,6 +293,7 @@ async function createFailedSheet(workbook, failedItems) {
     // Data rows
     failedItems.forEach((item) => {
         sheet.addRow([
+            item.category || '',
             item.sku,
             item.rowIndex,
             item.filename,
@@ -238,6 +304,7 @@ async function createFailedSheet(workbook, failedItems) {
 
     // Set column widths
     sheet.columns = [
+        { width: 25 },
         { width: 35 },
         { width: 8 },
         { width: 30 },

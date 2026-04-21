@@ -5,14 +5,16 @@ import config from '../config/index.js';
 import logger from '../utils/logger.js';
 import {
     isValidFile,
-    generateImageFilename,
-    getImageSavePath,
+    sanitizeFilename,
+    getExtensionFromUrl,
     ensureDir,
 } from '../utils/fileUtils.js';
+import { join } from 'path';
 
 /**
- * Download Manager Service (Upgraded)
- * Uses high-performance persistent connections and atomic writes
+ * Download Manager Service (v3.0 — Category-Aware)
+ * Downloads images into Category/SKU folder structure
+ * Images are renamed as SKU_1.jpg, SKU_2.jpg, etc.
  */
 
 /**
@@ -20,7 +22,7 @@ import {
  */
 async function downloadImage(url, savePath, attempt = 1) {
     const tempPath = `${savePath}.tmp`;
-    
+
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), config.timeout);
@@ -37,12 +39,6 @@ async function downloadImage(url, savePath, attempt = 1) {
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        // Check content type
-        const contentType = response.headers.get('content-type');
-        if (contentType && !contentType.startsWith('image/')) {
-            logger.warn(`  [Warning] Content-type is ${contentType} for ${url}`);
         }
 
         // Atomic write to temp file
@@ -63,7 +59,8 @@ async function downloadImage(url, savePath, attempt = 1) {
         // Cleanup temp file
         await fs.unlink(tempPath).catch(() => {});
 
-        if (attempt < config.retryAttempts && !error.name === 'AbortError') {
+        // Fixed: correct operator precedence for retry check
+        if (attempt < config.retryAttempts && error.name !== 'AbortError') {
             const delay = config.retryDelay * Math.pow(2, attempt - 1);
             await new Promise(r => setTimeout(r, delay));
             return downloadImage(url, savePath, attempt + 1);
@@ -77,12 +74,30 @@ async function downloadImage(url, savePath, attempt = 1) {
 }
 
 /**
+ * Build the save path for an image.
+ * Structure: downloads/Category/SKU/SKU_1.jpg
+ */
+function buildImagePath(baseDir, category, sku, imageNumber, url) {
+    const sanitizedCategory = sanitizeFilename(category);
+    const sanitizedSku = sanitizeFilename(sku);
+    const ext = getExtensionFromUrl(url);
+
+    const categoryDir = join(baseDir, sanitizedCategory);
+    const skuDir = join(categoryDir, sanitizedSku);
+    ensureDir(skuDir);
+
+    const filename = `${sanitizedSku}_${imageNumber}${ext}`;
+    return { savePath: join(skuDir, filename), filename };
+}
+
+/**
  * Download all images for a single SKU
  */
 async function downloadSkuImages(skuData, onProgress) {
-    const { sku, urls, rowIndex } = skuData;
+    const { sku, category, urls, rowIndex } = skuData;
     const result = {
         sku,
+        category,
         rowIndex,
         downloaded: [],
         skipped: [],
@@ -90,11 +105,16 @@ async function downloadSkuImages(skuData, onProgress) {
         timestamp: new Date().toISOString(),
     };
 
-    for (const { url, columnIndex } of urls) {
-        const filename = generateImageFilename(sku, columnIndex, url);
-        const savePath = getImageSavePath(config.paths.downloads, sku, filename);
+    for (const { url, urlNumber } of urls) {
+        const { savePath, filename } = buildImagePath(
+            config.paths.downloads,
+            category,
+            sku,
+            urlNumber,
+            url
+        );
 
-        // Advanced file validation
+        // Skip if already downloaded and valid
         if (isValidFile(savePath, config.minFileSize)) {
             result.skipped.push({ filename, url, reason: 'Already exists & valid' });
             onProgress?.({ type: 'skip', sku, filename });
@@ -116,24 +136,28 @@ async function downloadSkuImages(skuData, onProgress) {
 }
 
 /**
- * Main orchestrator
+ * Main orchestrator — downloads all SKUs with parallel processing
  */
 export async function downloadAll(parsedData, startIndex = 0, callbacks = {}) {
-    const { onProgress, onSkuComplete, onInterrupt } = callbacks;
+    const { onProgress, onSkuComplete } = callbacks;
     ensureDir(config.paths.downloads);
 
     const limit = pLimit(config.concurrency);
     const results = [];
-    let isInterrupted = false;
     let currentIndex = startIndex;
 
     const dataToProcess = parsedData.slice(startIndex);
-    logger.info(`🚀 Starting high-speed download for ${dataToProcess.length} SKUs...`);
+    logger.info(`🚀 Starting download for ${dataToProcess.length} SKUs...`);
+
+    // Show category breakdown
+    const catMap = new Map();
+    for (const item of dataToProcess) {
+        catMap.set(item.category, (catMap.get(item.category) || 0) + 1);
+    }
+    logger.info(`📂 Downloading into ${catMap.size} category folders`);
 
     const tasks = dataToProcess.map((skuData, index) => {
         return limit(async () => {
-            if (isInterrupted) return null;
-
             const result = await downloadSkuImages(skuData, onProgress);
             results.push(result);
             currentIndex = startIndex + index + 1;
@@ -143,30 +167,37 @@ export async function downloadAll(parsedData, startIndex = 0, callbacks = {}) {
         });
     });
 
+    let wasInterrupted = false;
     try {
         await Promise.all(tasks);
     } catch (error) {
         logger.error(`Critical error during batch: ${error.message}`);
+        wasInterrupted = true;
     }
 
     return {
         results,
         lastProcessedIndex: currentIndex,
-        wasInterrupted: isInterrupted
+        wasInterrupted,
     };
 }
 
 export function calculateStats(results) {
     let success = 0, skipped = 0, failed = 0;
+    const categories = new Set();
+
     for (const r of results) {
         success += r.downloaded.length;
         skipped += r.skipped.length;
         failed += r.failed.length;
+        if (r.category) categories.add(r.category);
     }
+
     return {
         success, skipped, failed,
         totalSkus: results.length,
         totalImages: success + skipped + failed,
+        totalCategories: categories.size,
     };
 }
 
@@ -174,4 +205,3 @@ export default {
     downloadAll,
     calculateStats,
 };
-

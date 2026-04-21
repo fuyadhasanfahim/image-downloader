@@ -18,13 +18,14 @@ const PARENT_DIR = resolve(__dirname, '..', '..', '..'); // src/config -> src ->
  */
 export const config = {
     // Parallel download settings
-    concurrency: parseInt(process.env.CONCURRENCY || '30', 10),
+    concurrency: parseInt(process.env.CONCURRENCY || '10', 10),
     timeout: parseInt(process.env.TIMEOUT || '30000', 10),
     retryAttempts: parseInt(process.env.RETRY_ATTEMPTS || '3', 10),
     retryDelay: parseInt(process.env.RETRY_DELAY || '1000', 10),
 
     // Excel settings - can be a single file or folder with multiple xlsx files
     inputPath: process.env.INPUT_PATH || '',
+    inputFile: process.env.INPUT_PATH || '',  // alias for progressTracker compatibility
 
     // Directory paths - downloads folder is OUTSIDE the project (parent directory)
     paths: {

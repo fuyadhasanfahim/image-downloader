@@ -4,7 +4,7 @@ Production-ready Node.js application for bulk image downloading, renaming, and o
 
 ## ⚡ Quick Start
 
-### Option 1: Double-Click (Easy) hiding
+### Option 1: Double-Click (Easy)
 
 - **`download.bat`**: Downloads images from Excel files.
 - **`rename.bat`**: Renames generated images and moves completed folders to `done/`.
@@ -19,18 +19,18 @@ npm run rename
 
 ## ✨ Features
 
-| Feature            | Description                                                    |
-| ------------------ | -------------------------------------------------------------- |
-| 🔍 **Auto-detect** | Finds Excel files in parent folder, auto-detects header row    |
-| ⚡ **Parallel**    | 10 concurrent downloads (configurable)                         |
-| 🏷️ **Renamer**     | Smartly renames new images to follow sequence (e.g. `_6`→`_7`) |
-| 📂 **Organizer**   | Moves processed SKU folders to `done/` directory               |
-| � **Resume**       | Ctrl+C saves progress, run again to continue                   |
-| 📊 **Reports**     | Summary Excel with statistics                                  |
+| Feature            | Description                                                        |
+| ------------------ | ------------------------------------------------------------------ |
+| 🔍 **Auto-detect** | Finds Excel files, auto-detects header row, Category & SKU columns |
+| ⚡ **Parallel**    | 10 concurrent downloads (configurable)                             |
+| 📂 **Categories**  | Organizes downloads into `Category/SKU/` folder structure          |
+| 🏷️ **Renamer**     | Smartly renames new images to follow sequence (e.g. `_6`→`_7`)     |
+| 🔄 **Resume**      | Ctrl+C saves progress, run again to continue                      |
+| 📊 **Reports**     | Summary Excel with per-category statistics                         |
 
 ## 📂 Workflow
 
-1.  **Download**: Run `download.bat`. Images go to `downloads/sku_name/`.
+1.  **Download**: Run `download.bat`. Images go to `downloads/Category/SKU/`.
 2.  **Add Images**: Place your generated/extra images in the SKU folders.
 3.  **Rename**: Run `rename.bat`. It will:
     - Scan for the last number (e.g., `sku_5.jpg`).
@@ -49,8 +49,9 @@ OUTPUT_DIR=downloads    # Output folder name
 
 ## 📋 Excel Format
 
-- **Column A**: SKU (auto-detected)
-- **URL columns**: Any column with "URL" in header
+- **Category English**: Auto-detected, used for top-level folder names
+- **SKU**: Auto-detected, used for subfolder names
+- **URL columns**: Any column matching "URL 1" through "URL 9"
 
 ## License
 

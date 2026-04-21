@@ -4,5 +4,6 @@ logs/
 downloads/
 reports/
 done/
+data/
 .progress.json
 *.log

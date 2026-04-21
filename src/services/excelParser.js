@@ -5,8 +5,8 @@ import config from '../config/index.js';
 import logger from '../utils/logger.js';
 
 /**
- * Excel Parser Service (Upgraded)
- * Handles reading and parsing Excel files using streaming for high performance
+ * Excel Parser Service (v3.0 — Category-Aware)
+ * Auto-detects header row, Category, SKU, and URL columns
  */
 
 /**
@@ -25,7 +25,7 @@ export function findExcelFiles(inputPath) {
         return readdirSync(inputPath)
             .filter(file => {
                 const ext = extname(file).toLowerCase();
-                return ext === '.xlsx' || ext === '.xls';
+                return (ext === '.xlsx' || ext === '.xls') && !file.startsWith('~$');
             })
             .map(file => join(inputPath, file))
             .sort();
@@ -35,7 +35,86 @@ export function findExcelFiles(inputPath) {
 }
 
 /**
- * Parse a single Excel file using streaming
+ * Auto-detect header row and column mapping.
+ * Scans first 50 rows to find a row containing "SKU" and URL columns.
+ * Also detects "Category English" or similar category columns.
+ */
+function detectHeaders(worksheet) {
+    const result = {
+        headerRowIndex: -1,
+        skuColIndex: -1,
+        categoryColIndex: -1,
+        categoryLabel: null,
+        urlColIndices: [],      // original URL columns only
+        allUrlColIndices: [],   // all URL columns including "NEW" ones
+    };
+
+    for (let i = 1; i <= Math.min(50, worksheet.rowCount); i++) {
+        const row = worksheet.getRow(i);
+        const values = row.values.map(v => String(v || '').trim());
+        const upper = values.map(v => v.toUpperCase());
+
+        const skuIdx = upper.indexOf('SKU');
+        if (skuIdx === -1) continue;
+
+        // Find URL columns - only URL 1 through URL 9 (per Excel instructions)
+        // Columns 10+ are promotion/brand pictures, "NEW" columns are renamed URLs
+        const originalUrlCols = [];
+        const allUrlCols = [];
+        const downloadableUrlPattern = /^URL\s+[1-9]$/;
+
+        upper.forEach((v, idx) => {
+            if (v.includes('URL')) {
+                allUrlCols.push(idx);
+                // Only include if it matches exactly "URL <number>" with nothing else
+                if (downloadableUrlPattern.test(v.trim())) {
+                    originalUrlCols.push(idx);
+                }
+            }
+        });
+
+        if (originalUrlCols.length < 1) continue;
+
+        // Detect category column — prefer "Category English" over "Category German"
+        let categoryCol = -1;
+        let categoryLabel = null;
+
+        for (let c = 0; c < upper.length; c++) {
+            const val = upper[c];
+            if (val === 'CATEGORY ENGLISH') {
+                categoryCol = c;
+                categoryLabel = values[c];
+                break;
+            }
+        }
+
+        // Fallback: any column with "CATEGORY" or "KATEGORIE"
+        if (categoryCol === -1) {
+            for (let c = 0; c < upper.length; c++) {
+                const val = upper[c];
+                if (val.includes('CATEGOR') || val.includes('KATEGOR')) {
+                    categoryCol = c;
+                    categoryLabel = values[c];
+                    break;
+                }
+            }
+        }
+
+        result.headerRowIndex = i;
+        result.skuColIndex = skuIdx;
+        result.categoryColIndex = categoryCol;
+        result.categoryLabel = categoryLabel;
+        result.urlColIndices = originalUrlCols;
+        result.allUrlColIndices = allUrlCols;
+
+        break;
+    }
+
+    return result;
+}
+
+/**
+ * Parse a single Excel file
  */
 export async function parseExcelFile(filePath) {
     if (!existsSync(filePath)) {
@@ -43,71 +122,88 @@ export async function parseExcelFile(filePath) {
     }
 
     const fileName = basename(filePath);
-    logger.info(`⚡ Streaming: ${fileName}`);
+    logger.info(`⚡ Reading: ${fileName}`);
 
     const workbook = new ExcelJS.Workbook();
-    // For now, we'll read the file normally but exceljs is much faster/better than xlsx for large files
-    // True streaming would require a redesign of header detection logic, but exceljs is already a huge upgrade
     await workbook.xlsx.readFile(filePath);
     const worksheet = workbook.worksheets[0];
 
     if (!worksheet) {
         logger.warn(`Empty file: ${fileName}`);
-        return [];
+        return { data: [], headers: null };
     }
 
-    // Header detection
-    let headerRowIndex = 1;
-    let skuColIndex = 1;
-    let urlColIndices = [];
+    // Auto-detect headers
+    const headers = detectHeaders(worksheet);
 
-    // Scan first 50 rows for headers
-    for (let i = 1; i <= Math.min(50, worksheet.rowCount); i++) {
-        const row = worksheet.getRow(i);
-        const values = row.values.map(v => String(v || '').trim().toUpperCase());
-        
-        const hasSku = values.some(v => v === 'SKU');
-        const urlCols = values.map((v, idx) => v.includes('URL') ? idx : -1).filter(idx => idx !== -1);
-
-        if (hasSku && urlCols.length >= 2) {
-            headerRowIndex = i;
-            skuColIndex = values.indexOf('SKU');
-            urlColIndices = urlCols;
-            break;
-        }
+    if (headers.headerRowIndex === -1) {
+        logger.warn(`Could not detect headers in: ${fileName}`);
+        return { data: [], headers: null };
     }
 
-    logger.info(`  Header found at row ${headerRowIndex}, URL columns: ${urlColIndices.length}`);
+    logger.info(`  📋 Header at row ${headers.headerRowIndex}`);
+    logger.info(`  📦 SKU column: ${headers.skuColIndex}`);
+    logger.info(`  🔗 URL columns (original): ${headers.urlColIndices.length}`);
 
+    if (headers.categoryColIndex !== -1) {
+        logger.info(`  📂 Category column: "${headers.categoryLabel}" (col ${headers.categoryColIndex})`);
+    } else {
+        logger.warn(`  ⚠️  No category column detected — images will download flat`);
+    }
+
+    // Parse data rows
     const parsedData = [];
     worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber <= headerRowIndex) return;
+        if (rowNumber <= headers.headerRowIndex) return;
 
-        const sku = row.getCell(skuColIndex).text;
-        if (!sku || sku.trim() === '' || sku.toLowerCase() === 'nan') return;
+        const sku = (row.getCell(headers.skuColIndex).text || '').trim();
+        if (!sku || sku.toLowerCase() === 'nan') return;
 
+        // Extract category
+        let category = '';
+        if (headers.categoryColIndex !== -1) {
+            category = (row.getCell(headers.categoryColIndex).text || '').trim();
+        }
+
+        // Extract original URLs only (pure "URL N" columns)
         const urls = [];
-        urlColIndices.forEach(colIdx => {
+        let sequentialNumber = 1;
+        for (const colIdx of headers.urlColIndices) {
             const cell = row.getCell(colIdx);
             const url = cell.text || (cell.value && cell.value.hyperlink) || cell.value;
             if (isValidUrl(url)) {
                 urls.push({
                     url: String(url).trim(),
-                    columnIndex: colIdx
+                    columnIndex: colIdx,
+                    urlNumber: sequentialNumber,
                 });
+                sequentialNumber++;
             }
-        });
+        }
 
-        parsedData.push({
-            sku: String(sku).trim(),
-            urls,
-            rowIndex: rowNumber,
-            sourceFile: fileName
-        });
+        if (urls.length > 0) {
+            parsedData.push({
+                sku: String(sku).trim(),
+                category: category || 'Uncategorized',
+                urls,
+                rowIndex: rowNumber,
+                sourceFile: fileName,
+            });
+        }
     });
 
-    logger.success(`  Parsed ${parsedData.length} SKUs`);
-    return parsedData;
+    logger.success(`  ✅ Parsed ${parsedData.length} SKUs with URLs`);
+
+    // Log category summary
+    if (headers.categoryColIndex !== -1) {
+        const catMap = new Map();
+        for (const item of parsedData) {
+            catMap.set(item.category, (catMap.get(item.category) || 0) + 1);
+        }
+        logger.info(`  📊 ${catMap.size} categories detected`);
+    }
+
+    return { data: parsedData, headers };
 }
 
 /**
@@ -115,15 +211,19 @@ export async function parseExcelFile(filePath) {
  */
 export async function parseMultipleExcelFiles(filePaths) {
     const allData = [];
+    let detectedHeaders = null;
+
     for (const filePath of filePaths) {
         try {
-            const data = await parseExcelFile(filePath);
+            const { data, headers } = await parseExcelFile(filePath);
             allData.push(...data);
+            if (headers) detectedHeaders = headers;
         } catch (error) {
             logger.error(`Failed to parse ${basename(filePath)}: ${error.message}`);
         }
     }
-    return allData;
+
+    return { data: allData, headers: detectedHeaders };
 }
 
 function isValidUrl(url) {
@@ -142,4 +242,3 @@ export default {
     parseMultipleExcelFiles,
     getTotalImageCount,
 };
-

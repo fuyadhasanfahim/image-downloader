@@ -68,6 +68,7 @@ class Logger {
             [chalk.cyan('Skipped'), stats.skipped],
             [chalk.red('Failed'), chalk.bold.red(stats.failed)],
             [chalk.blue('Total SKUs'), stats.totalSkus],
+            [chalk.yellow('Categories'), stats.totalCategories || '-'],
             [chalk.magenta('Duration'), this.getElapsedTime()]
         );
 

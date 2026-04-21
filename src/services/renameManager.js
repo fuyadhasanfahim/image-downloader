@@ -6,8 +6,8 @@ import config from '../config/index.js';
 import { ensureDir } from '../utils/fileUtils.js';
 
 /**
- * Rename Manager Service (Upgraded)
- * Faster renaming and instant 'Move' organization
+ * Rename Manager Service (v3.0 — Category-Aware)
+ * Handles renaming and organizing images within Category/SKU structure
  */
 
 async function processFolder(folderPath) {
@@ -50,55 +50,120 @@ async function processFolder(folderPath) {
     }
 }
 
+/**
+ * Find all SKU folders recursively under downloads/.
+ * Supports both flat (downloads/SKU/) and category (downloads/Category/SKU/) structures.
+ */
+async function findSkuFolders(baseDir) {
+    const folders = [];
+    const entries = await fs.readdir(baseDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const fullPath = path.join(baseDir, entry.name);
+
+        // Check if this directory contains image files (it's a SKU folder)
+        const children = await fs.readdir(fullPath, { withFileTypes: true });
+        const hasImages = children.some(c => c.isFile() && /\.(jpg|jpeg|png|webp|gif)$/i.test(c.name));
+
+        if (hasImages) {
+            folders.push({ path: fullPath, category: null, sku: entry.name });
+        } else {
+            // It's probably a category folder — check its children
+            for (const child of children) {
+                if (!child.isDirectory()) continue;
+                const childPath = path.join(fullPath, child.name);
+                const grandChildren = await fs.readdir(childPath).catch(() => []);
+                const childHasImages = grandChildren.some(f => /\.(jpg|jpeg|png|webp|gif)$/i.test(f));
+                if (childHasImages) {
+                    folders.push({ path: childPath, category: entry.name, sku: child.name });
+                }
+            }
+        }
+    }
+
+    return folders;
+}
+
 export async function renameAndOrganize(onProgress) {
     const downloadsDir = config.paths.downloads;
     const doneDir = config.paths.done || path.join(config.paths.root, 'done');
 
     logger.info(`🔍 Scanning ${downloadsDir} for organization...`);
 
-    const entries = await fs.readdir(downloadsDir, { withFileTypes: true });
-    const folders = entries
-        .filter(dirent => dirent.isDirectory())
-        .map(dirent => path.join(downloadsDir, dirent.name));
+    const skuFolders = await findSkuFolders(downloadsDir);
 
-    if (folders.length === 0) return { folders: 0, renamed: 0 };
+    if (skuFolders.length === 0) {
+        logger.warn('No SKU folders with images found.');
+        return { folders: 0, renamed: 0 };
+    }
+
+    logger.info(`📂 Found ${skuFolders.length} SKU folders to process`);
 
     const limit = pLimit(config.concurrency || 10);
     let totalRenamed = 0;
     let processedFolders = 0;
 
-    await Promise.all(folders.map(folder => limit(async () => {
-        const stats = await processFolder(folder);
+    await Promise.all(skuFolders.map(folder => limit(async () => {
+        const stats = await processFolder(folder.path);
         totalRenamed += stats.renamed;
         processedFolders++;
 
         onProgress?.({
             type: 'rename',
-            folder: path.basename(folder),
+            folder: folder.sku,
+            category: folder.category,
             renamed: stats.renamed,
             total: processedFolders,
-            totalFolders: folders.length
+            totalFolders: skuFolders.length
         });
     })));
 
-    // Instant Move Strategy
-    logger.info(`🚚 Moving processed SKU folders to 'done' directory...`);
+    // Move to done/ preserving category structure
+    logger.info(`🚚 Moving processed folders to 'done' directory...`);
     await ensureDir(doneDir);
-    
-    for (const folder of folders) {
-        const dest = path.join(doneDir, path.basename(folder));
-        await fs.rename(folder, dest).catch(async (err) => {
-            // Fallback for cross-device moves
+
+    for (const folder of skuFolders) {
+        let destDir;
+        if (folder.category) {
+            // Preserve category folder structure: done/Category/SKU
+            destDir = path.join(doneDir, folder.category);
+            await ensureDir(destDir);
+        } else {
+            destDir = doneDir;
+        }
+
+        const dest = path.join(destDir, folder.sku);
+        await fs.rename(folder.path, dest).catch(async (err) => {
             if (err.code === 'EXDEV') {
-                logger.warn(`  [Notice] Cross-device move for ${path.basename(folder)}, using copy fallback...`);
-                // Simple recursive copy fallback would go here if needed
+                // Cross-device move: copy then delete
+                logger.warn(`  [Notice] Cross-device move for ${folder.sku}, using copy fallback...`);
+                await copyDir(folder.path, dest);
+                await fs.rm(folder.path, { recursive: true, force: true });
             } else {
                 throw err;
             }
         });
     }
 
-    return { folders: folders.length, renamed: totalRenamed };
+    return { folders: skuFolders.length, renamed: totalRenamed };
+}
+
+/**
+ * Recursive directory copy fallback for cross-device moves
+ */
+async function copyDir(src, dest) {
+    await ensureDir(dest);
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+            await copyDir(srcPath, destPath);
+        } else {
+            await fs.copyFile(srcPath, destPath);
+        }
+    }
 }
 
 export default { renameAndOrganize };
